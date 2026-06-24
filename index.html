@@ -162,11 +162,19 @@
     cursor: pointer;
     padding: 0;
     position: relative;
+    opacity: 0.25;
+    transform: scale(0.82);
+    transition: opacity 0.15s, transform 0.15s;
   }
   .dot-btn.blue{ background: var(--blue); }
   .dot-btn.yellow{ background: var(--yellow); }
   .dot-btn.red{ background: var(--red); }
-  .dot-btn.selected{ border-color: var(--accent); }
+  .dot-btn.selected{
+    opacity: 1;
+    transform: scale(1);
+    border-color: var(--accent);
+    box-shadow: 0 2px 7px rgba(0,0,0,0.18);
+  }
   .dot-btn.selected::after{
     content: "";
     position: absolute;
@@ -189,6 +197,42 @@
     justify-content: center;
   }
   .del-btn:active{ background: var(--card-soft); }
+  .icon-btn{
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: none;
+    background: var(--card-soft);
+    color: var(--ink);
+    cursor: pointer;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .icon-btn:active{ background: var(--line); }
+  .icon-btn:disabled{ opacity: 0.3; cursor: default; }
+  .reorder-group{ display: flex; gap: 5px; flex-shrink: 0; }
+  .edit-bar{
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .edit-toggle{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: var(--card-soft);
+    border: 1px solid var(--line);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .edit-toggle.active{ background: var(--accent); border-color: var(--accent); color: #fff; }
   .add-form{
     background: var(--card);
     border: 1px solid var(--line);
@@ -202,7 +246,7 @@
     border-radius: 10px;
     border: 1px solid var(--line);
     background: var(--bg);
-    font-size: 14px;
+    font-size: 16px;
     color: var(--ink);
     margin-bottom: 8px;
   }
@@ -355,6 +399,7 @@ let state = {
   tab: "inventory",
   showAdd: false,
   categoryFilter: "all",
+  editMode: false,
 };
 
 const STORAGE_KEY = "stock-items-v1";
@@ -442,6 +487,47 @@ function getCycleText(item){
   return avg;
 }
 
+function freqScore(item){
+  // 平均購入サイクル（日数）。短いほど頻繁になくなる＝上位。記録不足は下に。
+  const cycle = getCycleText(item);
+  if(cycle === null) return Infinity;
+  return cycle;
+}
+
+function sortItemsInCategory(items){
+  return items.slice().sort((a,b) => {
+    const aHas = typeof a.order === "number";
+    const bHas = typeof b.order === "number";
+    // 手動で並べ替えた品目を優先（order順）
+    if(aHas && bHas) return a.order - b.order;
+    if(aHas) return -1;
+    if(bHas) return 1;
+    // それ以外は「頻繁になくなる順」で自動表示
+    return freqScore(a) - freqScore(b);
+  });
+}
+
+function moveItem(id, dir){
+  const item = state.items.find(i => i.id === id);
+  if(!item) return;
+  const siblings = sortItemsInCategory(state.items.filter(i => i.category === item.category));
+  const idx = siblings.findIndex(i => i.id === id);
+  const swap = idx + dir;
+  if(swap < 0 || swap >= siblings.length) return;
+  const tmp = siblings[idx];
+  siblings[idx] = siblings[swap];
+  siblings[swap] = tmp;
+  // このカテゴリ全体の並び順を確定（以降は手動順を優先）
+  siblings.forEach((it, n) => { it.order = n; });
+  saveState();
+  render();
+}
+
+function toggleEdit(){
+  state.editMode = !state.editMode;
+  render();
+}
+
 function escapeHtml(s){
   return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
@@ -457,13 +543,6 @@ function renderInventoryTab(){
   const allCats = [...CATEGORIES_FOOD, CATEGORY_DAILY];
   let html = "";
 
-  const templatesHtml = `
-    <div class="template-row">
-      ${state.templates.map(t => `<button class="template-chip" onclick="addItem('${escapeHtml(t.name)}','${escapeHtml(t.category)}')">+ ${escapeHtml(t.name)}</button>`).join("")}
-    </div>
-  `;
-  html += templatesHtml;
-
   const filterChips = ["all", ...allCats];
   html += `
     <div class="cat-filter-row">
@@ -471,19 +550,44 @@ function renderInventoryTab(){
     </div>
   `;
 
+  html += `
+    <div class="edit-bar">
+      <button class="edit-toggle ${state.editMode?'active':''}" onclick="toggleEdit()">
+        ${state.editMode ? '完了' : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>並べ替え・削除`}
+      </button>
+    </div>
+  `;
+
   const catsToShow = state.categoryFilter === "all" ? allCats : [state.categoryFilter];
 
   if(state.items.length === 0){
-    html += `<div class="empty">在庫がまだありません。<br>上のテンプレートをタップするか、右下の + ボタンから追加してください。</div>`;
+    html += `<div class="empty">在庫がまだありません。<br>右下の + ボタンから追加してください。</div>`;
   } else {
     let anyShown = false;
     catsToShow.forEach(cat => {
-      const itemsInCat = state.items.filter(i => i.category === cat);
+      const itemsInCat = sortItemsInCategory(state.items.filter(i => i.category === cat));
       if(itemsInCat.length === 0) return;
       anyShown = true;
       html += `<div class="section-label">${escapeHtml(cat)}</div>`;
-      itemsInCat.forEach(item => {
+      itemsInCat.forEach((item, idx) => {
         const cycle = getCycleText(item);
+        let controls;
+        if(state.editMode){
+          controls = `
+            <div class="reorder-group">
+              <button class="icon-btn" aria-label="上へ" ${idx===0?'disabled':''} onclick="moveItem('${item.id}',-1)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
+              </button>
+              <button class="icon-btn" aria-label="下へ" ${idx===itemsInCat.length-1?'disabled':''} onclick="moveItem('${item.id}',1)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+            </div>
+            <button class="del-btn" aria-label="削除" onclick="deleteItem('${item.id}')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+            </button>`;
+        } else {
+          controls = renderDots(item);
+        }
         html += `
           <div class="item-card">
             <div class="item-main">
@@ -492,10 +596,7 @@ function renderInventoryTab(){
                 <span>${cycle ? `平均${cycle}日サイクル` : "購入記録なし"}</span>
               </div>
             </div>
-            ${renderDots(item)}
-            <button class="del-btn" aria-label="削除" onclick="deleteItem('${item.id}')">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-            </button>
+            ${controls}
           </div>
         `;
       });
@@ -535,6 +636,8 @@ function renderShoppingTab(){
 
 function renderAddModal(){
   if(!state.showAdd) return "";
+  // 選択中のカテゴリーがあれば、それを初期値にする
+  const defaultCat = (state.categoryFilter && state.categoryFilter !== "all") ? state.categoryFilter : CATEGORIES_FOOD[0];
   return `
     <div class="modal-overlay" onclick="if(event.target===this) closeAdd()">
       <div class="modal-sheet">
@@ -543,7 +646,7 @@ function renderAddModal(){
         <div class="add-form">
           <input type="text" id="new-item-name" placeholder="品名（例：ヨーグルト）" />
           <select id="new-item-category">
-            ${[...CATEGORIES_FOOD, CATEGORY_DAILY].map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+            ${[...CATEGORIES_FOOD, CATEGORY_DAILY].map(c => `<option value="${escapeHtml(c)}" ${c === defaultCat ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
           </select>
           <button class="add-btn" onclick="submitAdd()">追加する</button>
         </div>
