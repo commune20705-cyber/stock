@@ -14,12 +14,15 @@
     --line: #E6DCCB;
     --accent: #2E3338;
     --blue: #7B9E89;
+    --blue-deep: #4F7763;
     --blue-bg: #E7EFE9;
     --blue-text: #3F5C4C;
     --yellow: #D9A857;
+    --yellow-deep: #AF7C26;
     --yellow-bg: #FBF1E0;
     --yellow-text: #8A6322;
     --red: #C4665A;
+    --red-deep: #993E33;
     --red-bg: #FBEAE7;
     --red-text: #8A3C32;
   }
@@ -172,16 +175,21 @@
   .dot-btn.selected{
     opacity: 1;
     transform: scale(1);
-    border-color: var(--accent);
     box-shadow: 0 2px 7px rgba(0,0,0,0.18);
   }
+  .dot-btn.blue.selected{ border-color: var(--blue-deep); }
+  .dot-btn.yellow.selected{ border-color: var(--yellow-deep); }
+  .dot-btn.red.selected{ border-color: var(--red-deep); }
   .dot-btn.selected::after{
     content: "";
     position: absolute;
     inset: -5px;
-    border: 1.5px solid var(--accent);
+    border: 1.5px solid;
     border-radius: 50%;
   }
+  .dot-btn.blue.selected::after{ border-color: var(--blue-deep); }
+  .dot-btn.yellow.selected::after{ border-color: var(--yellow-deep); }
+  .dot-btn.red.selected::after{ border-color: var(--red-deep); }
   .del-btn{
     width: 30px;
     height: 30px;
@@ -233,6 +241,52 @@
     cursor: pointer;
   }
   .edit-toggle.active{ background: var(--accent); border-color: var(--accent); color: #fff; }
+  .drag-handle{
+    width: 34px;
+    height: 34px;
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: grab;
+    touch-action: none;
+  }
+  .item-card.dragging{
+    opacity: 0.9;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.18);
+    background: var(--card-soft);
+  }
+  .item-main.editable{ cursor: pointer; }
+  .memo-card{
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 12px 14px;
+    margin-top: 18px;
+  }
+  .memo-label{
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .memo-input{
+    width: 100%;
+    border: none;
+    background: transparent;
+    resize: vertical;
+    min-height: 72px;
+    font-size: 16px;
+    color: var(--ink);
+    font-family: inherit;
+    line-height: 1.6;
+    outline: none;
+    padding: 0;
+  }
   .add-form{
     background: var(--card);
     border: 1px solid var(--line);
@@ -377,7 +431,7 @@
 <div id="app"><div class="loading">読み込み中…</div></div>
 
 <script>
-const CATEGORIES_FOOD = ["冷蔵庫","冷凍庫","乾物","調味料"];
+const CATEGORIES_FOOD = ["冷蔵庫","野菜室","冷凍庫","乾物","調味料"];
 const CATEGORY_DAILY = "日用品";
 const DEFAULT_TEMPLATES = [
   {name:"卵", category:"冷蔵庫"},
@@ -400,6 +454,8 @@ let state = {
   showAdd: false,
   categoryFilter: "all",
   editMode: false,
+  editingItemId: null,
+  memo: "",
 };
 
 const STORAGE_KEY = "stock-items-v1";
@@ -416,6 +472,7 @@ async function loadState(){
     if(raw){
       const parsed = JSON.parse(raw);
       state.items = parsed.items || [];
+      state.memo = parsed.memo || "";
     }
   }catch(e){
     state.items = [];
@@ -431,7 +488,7 @@ async function loadState(){
 
 function saveState(){
   try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({items: state.items}));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({items: state.items, memo: state.memo}));
   }catch(e){
     console.error("保存に失敗しました", e);
   }
@@ -507,25 +564,120 @@ function sortItemsInCategory(items){
   });
 }
 
-function moveItem(id, dir){
-  const item = state.items.find(i => i.id === id);
-  if(!item) return;
-  const siblings = sortItemsInCategory(state.items.filter(i => i.category === item.category));
-  const idx = siblings.findIndex(i => i.id === id);
-  const swap = idx + dir;
-  if(swap < 0 || swap >= siblings.length) return;
-  const tmp = siblings[idx];
-  siblings[idx] = siblings[swap];
-  siblings[swap] = tmp;
-  // このカテゴリ全体の並び順を確定（以降は手動順を優先）
-  siblings.forEach((it, n) => { it.order = n; });
+function toggleEdit(){
+  state.editMode = !state.editMode;
+  render();
+}
+
+/* ===== 長押しで編集モードに入る（在庫タブ・通常表示時） ===== */
+let longPressTimer = null;
+function setupLongPress(){
+  document.querySelectorAll(".item-card").forEach(card => {
+    card.addEventListener("pointerdown", onLongPressStart);
+  });
+}
+function onLongPressStart(e){
+  if(e.target.closest("button")) return; // ステータス等のボタン操作は除外
+  const sx = e.clientX, sy = e.clientY;
+  longPressTimer = setTimeout(() => {
+    cleanup();
+    state.editMode = true;
+    render();
+  }, 450);
+  function cancel(ev){
+    if(ev.type === "pointermove" && Math.abs(ev.clientX - sx) < 10 && Math.abs(ev.clientY - sy) < 10) return;
+    cleanup();
+  }
+  function cleanup(){
+    clearTimeout(longPressTimer);
+    document.removeEventListener("pointermove", cancel);
+    document.removeEventListener("pointerup", cancel);
+    document.removeEventListener("pointercancel", cancel);
+  }
+  document.addEventListener("pointermove", cancel);
+  document.addEventListener("pointerup", cancel);
+  document.addEventListener("pointercancel", cancel);
+}
+
+/* ===== ハンドルをドラッグして並べ替え（編集モード時） ===== */
+let dragCtx = null;
+function setupDrag(){
+  document.querySelectorAll(".drag-handle").forEach(h => {
+    h.addEventListener("pointerdown", onDragStart);
+  });
+}
+function onDragStart(e){
+  e.preventDefault();
+  const row = e.target.closest(".item-card");
+  const group = row && row.closest(".cat-group");
+  if(!row || !group) return;
+  dragCtx = { row, group };
+  row.classList.add("dragging");
+  row.style.pointerEvents = "none";
+  document.addEventListener("pointermove", onDragMove, { passive: false });
+  document.addEventListener("pointerup", onDragEnd);
+  document.addEventListener("pointercancel", onDragEnd);
+}
+function onDragMove(e){
+  if(!dragCtx) return;
+  e.preventDefault();
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const overRow = el && el.closest(".item-card");
+  if(!overRow || overRow === dragCtx.row) return;
+  if(overRow.closest(".cat-group") !== dragCtx.group) return; // 同じカテゴリ内のみ
+  const rect = overRow.getBoundingClientRect();
+  const before = e.clientY < rect.top + rect.height / 2;
+  dragCtx.group.insertBefore(dragCtx.row, before ? overRow : overRow.nextSibling);
+}
+function onDragEnd(){
+  if(!dragCtx) return;
+  const group = dragCtx.group;
+  dragCtx.row.classList.remove("dragging");
+  dragCtx.row.style.pointerEvents = "";
+  document.removeEventListener("pointermove", onDragMove);
+  document.removeEventListener("pointerup", onDragEnd);
+  document.removeEventListener("pointercancel", onDragEnd);
+  dragCtx = null;
+  // 並び順を確定
+  group.querySelectorAll(".item-card").forEach((r, n) => {
+    const item = state.items.find(i => i.id === r.getAttribute("data-id"));
+    if(item) item.order = n;
+  });
   saveState();
   render();
 }
 
-function toggleEdit(){
-  state.editMode = !state.editMode;
+/* ===== 項目をタップして 名前変更/カテゴリ再選択 ===== */
+function openEditItem(id){
+  state.editingItemId = id;
   render();
+  setTimeout(() => {
+    const el = document.getElementById("edit-item-name");
+    if(el) el.focus();
+  }, 50);
+}
+function closeEditItem(){
+  state.editingItemId = null;
+  render();
+}
+function saveEditItem(){
+  const item = state.items.find(i => i.id === state.editingItemId);
+  if(!item){ closeEditItem(); return; }
+  const name = document.getElementById("edit-item-name").value.trim();
+  const cat = document.getElementById("edit-item-category").value;
+  if(name) item.name = name;
+  if(cat && cat !== item.category){
+    item.category = cat;
+    delete item.order; // カテゴリ移動時は並び順をリセット（移動先で自動表示）
+  }
+  saveState();
+  closeEditItem();
+}
+
+/* ===== 買い物リストのメモ（再描画せず保存してフォーカス維持） ===== */
+function onMemoInput(v){
+  state.memo = v;
+  saveState();
 }
 
 function escapeHtml(s){
@@ -560,6 +712,10 @@ function renderInventoryTab(){
 
   const catsToShow = state.categoryFilter === "all" ? allCats : [state.categoryFilter];
 
+  if(state.editMode){
+    html += `<div class="empty" style="padding:8px 20px 14px;">三本線（≡）をドラッグで並べ替え／項目をタップで名前・カテゴリ変更</div>`;
+  }
+
   if(state.items.length === 0){
     html += `<div class="empty">在庫がまだありません。<br>右下の + ボタンから追加してください。</div>`;
   } else {
@@ -569,37 +725,34 @@ function renderInventoryTab(){
       if(itemsInCat.length === 0) return;
       anyShown = true;
       html += `<div class="section-label">${escapeHtml(cat)}</div>`;
-      itemsInCat.forEach((item, idx) => {
+      html += `<div class="cat-group" data-cat="${escapeHtml(cat)}">`;
+      itemsInCat.forEach((item) => {
         const cycle = getCycleText(item);
-        let controls;
+        let lead = "";
+        let trail;
         if(state.editMode){
-          controls = `
-            <div class="reorder-group">
-              <button class="icon-btn" aria-label="上へ" ${idx===0?'disabled':''} onclick="moveItem('${item.id}',-1)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
-              </button>
-              <button class="icon-btn" aria-label="下へ" ${idx===itemsInCat.length-1?'disabled':''} onclick="moveItem('${item.id}',1)">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-              </button>
-            </div>
-            <button class="del-btn" aria-label="削除" onclick="deleteItem('${item.id}')">
+          lead = `<button class="drag-handle" aria-label="ドラッグで並べ替え"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg></button>`;
+          trail = `<button class="del-btn" aria-label="削除" onclick="deleteItem('${item.id}')">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
             </button>`;
         } else {
-          controls = renderDots(item);
+          trail = renderDots(item);
         }
+        const mainAttr = state.editMode ? ` class="item-main editable" onclick="openEditItem('${item.id}')"` : ` class="item-main"`;
         html += `
-          <div class="item-card">
-            <div class="item-main">
+          <div class="item-card" data-id="${item.id}" data-cat="${escapeHtml(cat)}">
+            ${lead}
+            <div${mainAttr}>
               <p class="item-name">${escapeHtml(item.name)}</p>
               <div class="item-meta">
                 <span>${cycle ? `平均${cycle}日サイクル` : "購入記録なし"}</span>
               </div>
             </div>
-            ${controls}
+            ${trail}
           </div>
         `;
       });
+      html += `</div>`;
     });
     if(!anyShown){
       html += `<div class="empty">このカテゴリにはまだ在庫がありません。</div>`;
@@ -610,27 +763,43 @@ function renderInventoryTab(){
 
 function renderShoppingTab(){
   const needed = state.items.filter(i => i.status === "yellow" || i.status === "red");
-  needed.sort((a,b) => {
-    if(a.status === b.status) return 0;
-    return a.status === "red" ? -1 : 1;
-  });
+
+  let html = "";
 
   if(needed.length === 0){
-    return `<div class="empty">買い物リストは空です。<br>在庫が黄色・赤になると自動でここに表示されます。</div>`;
+    html += `<div class="empty">買い物リストは空です。<br>在庫が黄色・赤になると自動でここに表示されます。</div>`;
+  } else {
+    // 食材（冷蔵庫・野菜室・冷凍庫・乾物・調味料）／日用品 でグループ化
+    const groups = [
+      { label: "食材", cats: CATEGORIES_FOOD },
+      { label: "日用品", cats: [CATEGORY_DAILY] },
+    ];
+    groups.forEach(g => {
+      const list = needed.filter(i => g.cats.includes(i.category));
+      list.sort((a,b) => (a.status === b.status) ? 0 : (a.status === "red" ? -1 : 1));
+      if(list.length === 0) return;
+      html += `<div class="section-label">${g.label}（${list.length}）</div>`;
+      list.forEach(item => {
+        html += `
+          <div class="shop-item">
+            <button class="shop-check" aria-label="買った" onclick="setStatus('${item.id}','blue')"></button>
+            <div class="shop-main">
+              <p class="shop-name">${escapeHtml(item.name)}</p>
+              <span class="shop-tag ${item.status}">${item.status === 'red' ? '必須' : '検討'}</span>
+            </div>
+          </div>
+        `;
+      });
+    });
   }
 
-  let html = `<div class="section-label">買うもの（${needed.length}）</div>`;
-  needed.forEach(item => {
-    html += `
-      <div class="shop-item">
-        <button class="shop-check" aria-label="買った" onclick="setStatus('${item.id}','blue')"></button>
-        <div class="shop-main">
-          <p class="shop-name">${escapeHtml(item.name)}</p>
-          <span class="shop-tag ${item.status}">${item.status === 'red' ? '必須' : '検討'}</span>
-        </div>
-      </div>
-    `;
-  });
+  // 下部に固定のメモ欄（自動保存）
+  html += `
+    <div class="memo-card">
+      <div class="memo-label">メモ</div>
+      <textarea class="memo-input" placeholder="買い忘れ防止メモ（自動保存されます）" oninput="onMemoInput(this.value)">${escapeHtml(state.memo || "")}</textarea>
+    </div>
+  `;
   return html;
 }
 
@@ -677,6 +846,27 @@ function openAdd(){
   }, 50);
 }
 
+function renderEditItemModal(){
+  if(!state.editingItemId) return "";
+  const item = state.items.find(i => i.id === state.editingItemId);
+  if(!item) return "";
+  return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeEditItem()">
+      <div class="modal-sheet">
+        <div class="close-row"><button onclick="closeEditItem()">閉じる</button></div>
+        <h3>項目を編集</h3>
+        <div class="add-form">
+          <input type="text" id="edit-item-name" value="${escapeHtml(item.name)}" />
+          <select id="edit-item-category">
+            ${[...CATEGORIES_FOOD, CATEGORY_DAILY].map(c => `<option value="${escapeHtml(c)}" ${c === item.category ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+          </select>
+          <button class="add-btn" onclick="saveEditItem()">保存</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function setTab(tab){
   state.tab = tab;
   render();
@@ -714,7 +904,14 @@ function render(){
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
     </button>` : ""}
     ${renderAddModal()}
+    ${renderEditItemModal()}
   `;
+
+  // 在庫タブのジェスチャーを有効化
+  if(state.tab === "inventory"){
+    if(state.editMode) setupDrag();
+    else setupLongPress();
+  }
 }
 
 window.addEventListener("DOMContentLoaded", loadState);
